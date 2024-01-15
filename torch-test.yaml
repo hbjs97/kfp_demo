@@ -1,0 +1,49 @@
+apiVersion: machinelearning.seldon.io/v1
+kind: SeldonDeployment
+metadata:
+  name: torch-test
+  namespace: seldon-deploy
+spec:
+  name: model
+  predictors:
+  - name: model
+
+    componentSpecs:
+    - spec:
+        volumes:
+        - name: torch-test-model-provision-location
+          emptyDir: {}
+
+        initContainers:
+        - name: torch-test-model-initializer
+          image: kfserving/storage-initializer:v0.4.1
+          args:
+            - "s3://mlflow/mlflow/artifacts/0/7f77488f66164e14a7702a185dbd8d36/artifacts/test_model5"
+            - "/mnt/models/torch-test"
+          volumeMounts:
+          - mountPath: /mnt/models/torch-test
+            name: torch-test-model-provision-location
+          envFrom:
+          - secretRef:
+              name: seldon-init-container-secret
+
+        containers:
+        - name: torch-test-model
+          image: ghcr.io/mlops-for-all/mlflowserver
+          volumeMounts:
+          - mountPath: /mnt/models/torch-test
+            name: torch-test-model-provision-location
+            readOnly: true
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            runAsGroup: 0
+
+    graph:
+      name: torch-test-model
+      type: MODEL
+      parameters:
+      - name: model_uri
+        type: STRING
+        value: "/mnt/models/torch-test"
+      children: []
