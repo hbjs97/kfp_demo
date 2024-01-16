@@ -2,7 +2,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
   generateName: pytorch-mnist-prediction-pipeline-
-  annotations: {pipelines.kubeflow.org/kfp_sdk_version: 1.8.22, pipelines.kubeflow.org/pipeline_compilation_time: '2024-01-15T23:01:21.231793',
+  annotations: {pipelines.kubeflow.org/kfp_sdk_version: 1.8.22, pipelines.kubeflow.org/pipeline_compilation_time: '2024-01-16T22:24:01.994937',
     pipelines.kubeflow.org/pipeline_spec: '{"description": "Pipeline for predicting
       MNIST dataset using a PyTorch model.", "inputs": [{"name": "model_name", "type":
       "String"}], "name": "PyTorch MNIST Prediction Pipeline"}'}
@@ -15,12 +15,6 @@ spec:
       args: [--model, /tmp/outputs/model/data, --input-example, /tmp/outputs/input_example/data,
         --signature, /tmp/outputs/signature/data, --conda-env, /tmp/outputs/conda_env/data]
       command:
-      - sh
-      - -c
-      - (PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location
-        'torch' 'torchvision' 'numpy' 'dill' || PIP_DISABLE_PIP_VERSION_CHECK=1 python3
-        -m pip install --quiet --no-warn-script-location 'torch' 'torchvision' 'numpy'
-        'dill' --user) && "$0" "$@"
       - sh
       - -ec
       - |
@@ -39,59 +33,60 @@ spec:
             signature_path,
             conda_env_path,
         ):
+            import dill
+            from mlflow.models.signature import infer_signature, ModelSignature
+            from mlflow.utils.environment import _mlflow_conda_env
+            from mlflow.types.schema import Schema, TensorSpec
+            import numpy as np
+            import pandas as pd
             import torch
             import torch.nn as nn
             import torch.nn.functional as F
-            import dill
-            from torchvision import transforms
-            from mlflow.models.signature import infer_signature
-            from mlflow.utils.environment import _mlflow_conda_env
 
-            # Define the neural network model
             class Net(nn.Module):
                 def __init__(self):
                     super(Net, self).__init__()
-                    self.conv1 = nn.Conv2d(1, 10, kernel_size=5)
-                    self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
-                    self.conv2_drop = nn.Dropout2d()
-                    self.fc1 = nn.Linear(320, 50)
-                    self.fc2 = nn.Linear(50, 10)
+                    self.fc1 = nn.Linear(4, 10)
+                    self.fc2 = nn.Linear(10, 2)
+                    self.to(torch.float64)
 
                 def forward(self, x):
-                    x = F.relu(F.max_pool2d(self.conv1(x), 2))
-                    x = F.relu(F.max_pool2d(self.conv2_drop(self.conv2(x)), 2))
-                    x = x.view(-1, 320)
-                    x = F.relu(self.fc1(x))
-                    x = F.dropout(x, training=self.training)
-                    x = self.fc2(x)
-                    return F.log_softmax(x)
+                    if isinstance(x, np.ndarray):
+                        x = torch.from_numpy(x)
+                    elif isinstance(x, pd.DataFrame):
+                        x = torch.tensor(x.values)
 
-            # Create and save the model
+                    x = x.view(-1, 4)
+                    if x.dtype != torch.float64:
+                        x = x.to(torch.float64)
+                    x = F.relu(self.fc1(x))
+                    x = self.fc2(x)
+                    x = F.log_softmax(x, dim=1)
+                    x = x.detach().cpu().numpy()
+                    return x
+
             model = Net()
 
-            # Prepare an input example and infer the signature
-            input_example = torch.randn(1, 1, 28, 28)  # Example input tensor
-            model.eval()  # Set the model to evaluation mode
-            with torch.no_grad():
-                output_example = model(input_example)
+            model.eval()
 
-            # Save the model
             with open(model_path, "wb") as f:
-                dill.dump(model, f)
+                torch.save(model.state_dict(), f)
 
-            # Save the input example
+            input_example = torch.rand(1, 1, 2, 2)
+
+            # Get the model's output as a PyTorch tensor
+            output_numpy = model(input_example)
+
+            # Use the numpy array for the signature
+            signature = infer_signature(input_example.numpy(), output_numpy)
+
             with open(input_example_path, "wb") as f:
                 dill.dump(input_example, f)
 
-            # Infer and save the signature
-            signature = infer_signature(input_example.numpy(), output_example.numpy())
             with open(signature_path, "wb") as f:
                 dill.dump(signature, f)
 
-            # Create and save the conda environment
-            conda_env = _mlflow_conda_env(
-                additional_pip_deps=["torch", "numpy", "dill", "mlflow"]
-            )
+            conda_env = _mlflow_conda_env()
             with open(conda_env_path, "wb") as f:
                 dill.dump(conda_env, f)
 
@@ -104,7 +99,7 @@ spec:
         _parsed_args = vars(_parser.parse_args())
 
         _outputs = mnist_model_train(**_parsed_args)
-      image: python:3.7
+      image: hbjs97/kfp:0.0.5
     outputs:
       artifacts:
       - {name: mnist-model-train-conda_env, path: /tmp/outputs/conda_env/data}
@@ -119,49 +114,42 @@ spec:
       annotations: {pipelines.kubeflow.org/component_spec: '{"implementation": {"container":
           {"args": ["--model", {"outputPath": "model"}, "--input-example", {"outputPath":
           "input_example"}, "--signature", {"outputPath": "signature"}, "--conda-env",
-          {"outputPath": "conda_env"}], "command": ["sh", "-c", "(PIP_DISABLE_PIP_VERSION_CHECK=1
-          python3 -m pip install --quiet --no-warn-script-location ''torch'' ''torchvision''
-          ''numpy'' ''dill'' || PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install
-          --quiet --no-warn-script-location ''torch'' ''torchvision'' ''numpy'' ''dill''
-          --user) && \"$0\" \"$@\"", "sh", "-ec", "program_path=$(mktemp)\nprintf
+          {"outputPath": "conda_env"}], "command": ["sh", "-ec", "program_path=$(mktemp)\nprintf
           \"%s\" \"$0\" > \"$program_path\"\npython3 -u \"$program_path\" \"$@\"\n",
           "def _make_parent_dirs_and_return_path(file_path: str):\n    import os\n    os.makedirs(os.path.dirname(file_path),
           exist_ok=True)\n    return file_path\n\ndef mnist_model_train(\n    model_path,\n    input_example_path,\n    signature_path,\n    conda_env_path,\n):\n    import
-          torch\n    import torch.nn as nn\n    import torch.nn.functional as F\n    import
-          dill\n    from torchvision import transforms\n    from mlflow.models.signature
-          import infer_signature\n    from mlflow.utils.environment import _mlflow_conda_env\n\n    #
-          Define the neural network model\n    class Net(nn.Module):\n        def
-          __init__(self):\n            super(Net, self).__init__()\n            self.conv1
-          = nn.Conv2d(1, 10, kernel_size=5)\n            self.conv2 = nn.Conv2d(10,
-          20, kernel_size=5)\n            self.conv2_drop = nn.Dropout2d()\n            self.fc1
-          = nn.Linear(320, 50)\n            self.fc2 = nn.Linear(50, 10)\n\n        def
-          forward(self, x):\n            x = F.relu(F.max_pool2d(self.conv1(x), 2))\n            x
-          = F.relu(F.max_pool2d(self.conv2_drop(self.conv2(x)), 2))\n            x
-          = x.view(-1, 320)\n            x = F.relu(self.fc1(x))\n            x =
-          F.dropout(x, training=self.training)\n            x = self.fc2(x)\n            return
-          F.log_softmax(x)\n\n    # Create and save the model\n    model = Net()\n\n    #
-          Prepare an input example and infer the signature\n    input_example = torch.randn(1,
-          1, 28, 28)  # Example input tensor\n    model.eval()  # Set the model to
-          evaluation mode\n    with torch.no_grad():\n        output_example = model(input_example)\n\n    #
-          Save the model\n    with open(model_path, \"wb\") as f:\n        dill.dump(model,
-          f)\n\n    # Save the input example\n    with open(input_example_path, \"wb\")
-          as f:\n        dill.dump(input_example, f)\n\n    # Infer and save the signature\n    signature
-          = infer_signature(input_example.numpy(), output_example.numpy())\n    with
-          open(signature_path, \"wb\") as f:\n        dill.dump(signature, f)\n\n    #
-          Create and save the conda environment\n    conda_env = _mlflow_conda_env(\n        additional_pip_deps=[\"torch\",
-          \"numpy\", \"dill\", \"mlflow\"]\n    )\n    with open(conda_env_path, \"wb\")
-          as f:\n        dill.dump(conda_env, f)\n\nimport argparse\n_parser = argparse.ArgumentParser(prog=''Mnist
-          model train'', description='''')\n_parser.add_argument(\"--model\", dest=\"model_path\",
+          dill\n    from mlflow.models.signature import infer_signature, ModelSignature\n    from
+          mlflow.utils.environment import _mlflow_conda_env\n    from mlflow.types.schema
+          import Schema, TensorSpec\n    import numpy as np\n    import pandas as
+          pd\n    import torch\n    import torch.nn as nn\n    import torch.nn.functional
+          as F\n\n    class Net(nn.Module):\n        def __init__(self):\n            super(Net,
+          self).__init__()\n            self.fc1 = nn.Linear(4, 10)\n            self.fc2
+          = nn.Linear(10, 2)\n            self.to(torch.float64)\n\n        def forward(self,
+          x):\n            if isinstance(x, np.ndarray):\n                x = torch.from_numpy(x)\n            elif
+          isinstance(x, pd.DataFrame):\n                x = torch.tensor(x.values)\n\n            x
+          = x.view(-1, 4)\n            if x.dtype != torch.float64:\n                x
+          = x.to(torch.float64)\n            x = F.relu(self.fc1(x))\n            x
+          = self.fc2(x)\n            x = F.log_softmax(x, dim=1)\n            x =
+          x.detach().cpu().numpy()\n            return x\n\n    model = Net()\n\n    model.eval()\n\n    with
+          open(model_path, \"wb\") as f:\n        torch.save(model.state_dict(), f)\n\n    input_example
+          = torch.rand(1, 1, 2, 2)\n\n    # Get the model''s output as a PyTorch tensor\n    output_numpy
+          = model(input_example)\n\n    # Use the numpy array for the signature\n    signature
+          = infer_signature(input_example.numpy(), output_numpy)\n\n    with open(input_example_path,
+          \"wb\") as f:\n        dill.dump(input_example, f)\n\n    with open(signature_path,
+          \"wb\") as f:\n        dill.dump(signature, f)\n\n    conda_env = _mlflow_conda_env()\n    with
+          open(conda_env_path, \"wb\") as f:\n        dill.dump(conda_env, f)\n\nimport
+          argparse\n_parser = argparse.ArgumentParser(prog=''Mnist model train'',
+          description='''')\n_parser.add_argument(\"--model\", dest=\"model_path\",
           type=_make_parent_dirs_and_return_path, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--input-example\",
           dest=\"input_example_path\", type=_make_parent_dirs_and_return_path, required=True,
           default=argparse.SUPPRESS)\n_parser.add_argument(\"--signature\", dest=\"signature_path\",
           type=_make_parent_dirs_and_return_path, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--conda-env\",
           dest=\"conda_env_path\", type=_make_parent_dirs_and_return_path, required=True,
           default=argparse.SUPPRESS)\n_parsed_args = vars(_parser.parse_args())\n\n_outputs
-          = mnist_model_train(**_parsed_args)\n"], "image": "python:3.7"}}, "name":
-          "Mnist model train", "outputs": [{"name": "model", "type": "dill"}, {"name":
-          "input_example", "type": "dill"}, {"name": "signature", "type": "dill"},
-          {"name": "conda_env", "type": "dill"}]}', pipelines.kubeflow.org/component_ref: '{}'}
+          = mnist_model_train(**_parsed_args)\n"], "image": "hbjs97/kfp:0.0.5"}},
+          "name": "Mnist model train", "outputs": [{"name": "model", "type": "dill"},
+          {"name": "input_example", "type": "dill"}, {"name": "signature", "type":
+          "dill"}, {"name": "conda_env", "type": "dill"}]}', pipelines.kubeflow.org/component_ref: '{}'}
   - name: pytorch-mnist-prediction-pipeline
     inputs:
       parameters:
@@ -187,12 +175,6 @@ spec:
         --conda-env, /tmp/inputs/conda_env/data]
       command:
       - sh
-      - -c
-      - (PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location
-        'torch' 'numpy' 'dill' 'mlflow' 'boto3' || PIP_DISABLE_PIP_VERSION_CHECK=1
-        python3 -m pip install --quiet --no-warn-script-location 'torch' 'numpy' 'dill'
-        'mlflow' 'boto3' --user) && "$0" "$@"
-      - sh
       - -ec
       - |
         program_path=$(mktemp)
@@ -208,8 +190,14 @@ spec:
         ):
             import os
             import dill
-            from mlflow.pytorch import save_model
+            import torch
+            import torch.nn as nn
+            import torch.nn.functional as F
+            import mlflow
+            from mlflow.pytorch import save_model, autolog, log_model
             from mlflow.tracking.client import MlflowClient
+            import pandas as pd
+            import numpy as np
 
             os.environ["MLFLOW_S3_ENDPOINT_URL"] = "http://minio-service.kubeflow.svc:9000"
             os.environ["AWS_ACCESS_KEY_ID"] = "minio"
@@ -217,8 +205,32 @@ spec:
 
             client = MlflowClient("http://mlflow-server-service.mlflow-system.svc:5000")
 
+            class Net(nn.Module):
+                def __init__(self):
+                    super(Net, self).__init__()
+                    self.fc1 = nn.Linear(4, 10)
+                    self.fc2 = nn.Linear(10, 2)
+                    self.to(torch.float64)
+
+                def forward(self, x):
+                    if isinstance(x, np.ndarray):
+                        x = torch.from_numpy(x)
+                    elif isinstance(x, pd.DataFrame):
+                        x = torch.tensor(x.values)
+
+                    x = x.view(-1, 4)
+                    if x.dtype != torch.float64:
+                        x = x.to(torch.float64)
+                    x = F.relu(self.fc1(x))
+                    x = self.fc2(x)
+                    x = F.log_softmax(x, dim=1)
+                    x = x.detach().cpu().numpy()
+                    return x
+
             with open(model_path, mode="rb") as f:
-                model = dill.load(f)
+                model = Net()
+                model.load_state_dict(torch.load(f))
+                model.eval()
 
             with open(input_example_path, "rb") as f:
                 input_example = dill.load(f)
@@ -226,17 +238,23 @@ spec:
             with open(signature_path, "rb") as f:
                 signature = dill.load(f)
 
-            with open(conda_env_path, "rb") as f:
-                conda_env = dill.load(f)
+            # with open(conda_env_path, "rb") as f:
+            #     conda_env = dill.load(f)
+
+            if isinstance(input_example, torch.Tensor):
+                input_example = input_example.numpy()
+            elif isinstance(input_example, list):
+                input_example = pd.DataFrame(input_example)
 
             save_model(
                 pytorch_model=model,
                 path=model_name,
-                conda_env=conda_env,
+                # conda_env=conda_env,
                 signature=signature,
                 input_example=input_example,
             )
-            run = client.create_run(experiment_id="0")
+
+            run = client.create_run("0")
             client.log_artifact(run.info.run_id, model_name)
 
         import argparse
@@ -249,7 +267,7 @@ spec:
         _parsed_args = vars(_parser.parse_args())
 
         _outputs = upload_mlflow_artifacts(**_parsed_args)
-      image: python:3.7
+      image: hbjs97/kfp:0.0.5
     inputs:
       parameters:
       - {name: model_name}
@@ -267,35 +285,43 @@ spec:
           {"args": ["--model-name", {"inputValue": "model_name"}, "--model", {"inputPath":
           "model"}, "--input-example", {"inputPath": "input_example"}, "--signature",
           {"inputPath": "signature"}, "--conda-env", {"inputPath": "conda_env"}],
-          "command": ["sh", "-c", "(PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip
-          install --quiet --no-warn-script-location ''torch'' ''numpy'' ''dill'' ''mlflow''
-          ''boto3'' || PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet
-          --no-warn-script-location ''torch'' ''numpy'' ''dill'' ''mlflow'' ''boto3''
-          --user) && \"$0\" \"$@\"", "sh", "-ec", "program_path=$(mktemp)\nprintf
-          \"%s\" \"$0\" > \"$program_path\"\npython3 -u \"$program_path\" \"$@\"\n",
-          "def upload_mlflow_artifacts(\n    model_name,\n    model_path,\n    input_example_path,\n    signature_path,\n    conda_env_path,\n):\n    import
-          os\n    import dill\n    from mlflow.pytorch import save_model\n    from
-          mlflow.tracking.client import MlflowClient\n\n    os.environ[\"MLFLOW_S3_ENDPOINT_URL\"]
+          "command": ["sh", "-ec", "program_path=$(mktemp)\nprintf \"%s\" \"$0\" >
+          \"$program_path\"\npython3 -u \"$program_path\" \"$@\"\n", "def upload_mlflow_artifacts(\n    model_name,\n    model_path,\n    input_example_path,\n    signature_path,\n    conda_env_path,\n):\n    import
+          os\n    import dill\n    import torch\n    import torch.nn as nn\n    import
+          torch.nn.functional as F\n    import mlflow\n    from mlflow.pytorch import
+          save_model, autolog, log_model\n    from mlflow.tracking.client import MlflowClient\n    import
+          pandas as pd\n    import numpy as np\n\n    os.environ[\"MLFLOW_S3_ENDPOINT_URL\"]
           = \"http://minio-service.kubeflow.svc:9000\"\n    os.environ[\"AWS_ACCESS_KEY_ID\"]
           = \"minio\"\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"] = \"minio123\"\n\n    client
-          = MlflowClient(\"http://mlflow-server-service.mlflow-system.svc:5000\")\n\n    with
-          open(model_path, mode=\"rb\") as f:\n        model = dill.load(f)\n\n    with
+          = MlflowClient(\"http://mlflow-server-service.mlflow-system.svc:5000\")\n\n    class
+          Net(nn.Module):\n        def __init__(self):\n            super(Net, self).__init__()\n            self.fc1
+          = nn.Linear(4, 10)\n            self.fc2 = nn.Linear(10, 2)\n            self.to(torch.float64)\n\n        def
+          forward(self, x):\n            if isinstance(x, np.ndarray):\n                x
+          = torch.from_numpy(x)\n            elif isinstance(x, pd.DataFrame):\n                x
+          = torch.tensor(x.values)\n\n            x = x.view(-1, 4)\n            if
+          x.dtype != torch.float64:\n                x = x.to(torch.float64)\n            x
+          = F.relu(self.fc1(x))\n            x = self.fc2(x)\n            x = F.log_softmax(x,
+          dim=1)\n            x = x.detach().cpu().numpy()\n            return x\n\n    with
+          open(model_path, mode=\"rb\") as f:\n        model = Net()\n        model.load_state_dict(torch.load(f))\n        model.eval()\n\n    with
           open(input_example_path, \"rb\") as f:\n        input_example = dill.load(f)\n\n    with
-          open(signature_path, \"rb\") as f:\n        signature = dill.load(f)\n\n    with
-          open(conda_env_path, \"rb\") as f:\n        conda_env = dill.load(f)\n\n    save_model(\n        pytorch_model=model,\n        path=model_name,\n        conda_env=conda_env,\n        signature=signature,\n        input_example=input_example,\n    )\n    run
-          = client.create_run(experiment_id=\"0\")\n    client.log_artifact(run.info.run_id,
-          model_name)\n\nimport argparse\n_parser = argparse.ArgumentParser(prog=''Upload
-          mlflow artifacts'', description='''')\n_parser.add_argument(\"--model-name\",
-          dest=\"model_name\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--model\",
+          open(signature_path, \"rb\") as f:\n        signature = dill.load(f)\n\n    #
+          with open(conda_env_path, \"rb\") as f:\n    #     conda_env = dill.load(f)\n\n    if
+          isinstance(input_example, torch.Tensor):\n        input_example = input_example.numpy()\n    elif
+          isinstance(input_example, list):\n        input_example = pd.DataFrame(input_example)\n\n    save_model(\n        pytorch_model=model,\n        path=model_name,\n        #
+          conda_env=conda_env,\n        signature=signature,\n        input_example=input_example,\n    )\n\n    run
+          = client.create_run(\"0\")\n    client.log_artifact(run.info.run_id, model_name)\n\nimport
+          argparse\n_parser = argparse.ArgumentParser(prog=''Upload mlflow artifacts'',
+          description='''')\n_parser.add_argument(\"--model-name\", dest=\"model_name\",
+          type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--model\",
           dest=\"model_path\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--input-example\",
           dest=\"input_example_path\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--signature\",
           dest=\"signature_path\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--conda-env\",
           dest=\"conda_env_path\", type=str, required=True, default=argparse.SUPPRESS)\n_parsed_args
           = vars(_parser.parse_args())\n\n_outputs = upload_mlflow_artifacts(**_parsed_args)\n"],
-          "image": "python:3.7"}}, "inputs": [{"name": "model_name", "type": "String"},
-          {"name": "model", "type": "dill"}, {"name": "input_example", "type": "dill"},
-          {"name": "signature", "type": "dill"}, {"name": "conda_env", "type": "dill"}],
-          "name": "Upload mlflow artifacts"}', pipelines.kubeflow.org/component_ref: '{}',
+          "image": "hbjs97/kfp:0.0.5"}}, "inputs": [{"name": "model_name", "type":
+          "String"}, {"name": "model", "type": "dill"}, {"name": "input_example",
+          "type": "dill"}, {"name": "signature", "type": "dill"}, {"name": "conda_env",
+          "type": "dill"}], "name": "Upload mlflow artifacts"}', pipelines.kubeflow.org/component_ref: '{}',
         pipelines.kubeflow.org/arguments.parameters: '{"model_name": "{{inputs.parameters.model_name}}"}'}
   arguments:
     parameters:
