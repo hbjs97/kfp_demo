@@ -2,7 +2,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
   generateName: pytorch-mnist-prediction-pipeline-
-  annotations: {pipelines.kubeflow.org/kfp_sdk_version: 1.8.22, pipelines.kubeflow.org/pipeline_compilation_time: '2024-01-16T22:24:01.994937',
+  annotations: {pipelines.kubeflow.org/kfp_sdk_version: 1.8.22, pipelines.kubeflow.org/pipeline_compilation_time: '2024-01-17T14:47:17.488271',
     pipelines.kubeflow.org/pipeline_spec: '{"description": "Pipeline for predicting
       MNIST dataset using a PyTorch model.", "inputs": [{"name": "model_name", "type":
       "String"}], "name": "PyTorch MNIST Prediction Pipeline"}'}
@@ -66,18 +66,16 @@ spec:
                     return x
 
             model = Net()
-
             model.eval()
 
             with open(model_path, "wb") as f:
+                # dill.dump(model, f)
                 torch.save(model.state_dict(), f)
 
             input_example = torch.rand(1, 1, 2, 2)
 
-            # Get the model's output as a PyTorch tensor
             output_numpy = model(input_example)
 
-            # Use the numpy array for the signature
             signature = infer_signature(input_example.numpy(), output_numpy)
 
             with open(input_example_path, "wb") as f:
@@ -130,10 +128,9 @@ spec:
           = x.view(-1, 4)\n            if x.dtype != torch.float64:\n                x
           = x.to(torch.float64)\n            x = F.relu(self.fc1(x))\n            x
           = self.fc2(x)\n            x = F.log_softmax(x, dim=1)\n            x =
-          x.detach().cpu().numpy()\n            return x\n\n    model = Net()\n\n    model.eval()\n\n    with
-          open(model_path, \"wb\") as f:\n        torch.save(model.state_dict(), f)\n\n    input_example
-          = torch.rand(1, 1, 2, 2)\n\n    # Get the model''s output as a PyTorch tensor\n    output_numpy
-          = model(input_example)\n\n    # Use the numpy array for the signature\n    signature
+          x.detach().cpu().numpy()\n            return x\n\n    model = Net()\n    model.eval()\n\n    with
+          open(model_path, \"wb\") as f:\n        # dill.dump(model, f)\n        torch.save(model.state_dict(),
+          f)\n\n    input_example = torch.rand(1, 1, 2, 2)\n\n    output_numpy = model(input_example)\n\n    signature
           = infer_signature(input_example.numpy(), output_numpy)\n\n    with open(input_example_path,
           \"wb\") as f:\n        dill.dump(input_example, f)\n\n    with open(signature_path,
           \"wb\") as f:\n        dill.dump(signature, f)\n\n    conda_env = _mlflow_conda_env()\n    with
@@ -199,6 +196,8 @@ spec:
             import pandas as pd
             import numpy as np
 
+            print("model path: ", model_path)
+
             os.environ["MLFLOW_S3_ENDPOINT_URL"] = "http://minio-service.kubeflow.svc:9000"
             os.environ["AWS_ACCESS_KEY_ID"] = "minio"
             os.environ["AWS_SECRET_ACCESS_KEY"] = "minio123"
@@ -230,6 +229,7 @@ spec:
             with open(model_path, mode="rb") as f:
                 model = Net()
                 model.load_state_dict(torch.load(f))
+                # model = dill.load(f)
                 model.eval()
 
             with open(input_example_path, "rb") as f:
@@ -290,7 +290,7 @@ spec:
           os\n    import dill\n    import torch\n    import torch.nn as nn\n    import
           torch.nn.functional as F\n    import mlflow\n    from mlflow.pytorch import
           save_model, autolog, log_model\n    from mlflow.tracking.client import MlflowClient\n    import
-          pandas as pd\n    import numpy as np\n\n    os.environ[\"MLFLOW_S3_ENDPOINT_URL\"]
+          pandas as pd\n    import numpy as np\n\n    print(\"model path: \", model_path)\n\n    os.environ[\"MLFLOW_S3_ENDPOINT_URL\"]
           = \"http://minio-service.kubeflow.svc:9000\"\n    os.environ[\"AWS_ACCESS_KEY_ID\"]
           = \"minio\"\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"] = \"minio123\"\n\n    client
           = MlflowClient(\"http://mlflow-server-service.mlflow-system.svc:5000\")\n\n    class
@@ -302,11 +302,12 @@ spec:
           x.dtype != torch.float64:\n                x = x.to(torch.float64)\n            x
           = F.relu(self.fc1(x))\n            x = self.fc2(x)\n            x = F.log_softmax(x,
           dim=1)\n            x = x.detach().cpu().numpy()\n            return x\n\n    with
-          open(model_path, mode=\"rb\") as f:\n        model = Net()\n        model.load_state_dict(torch.load(f))\n        model.eval()\n\n    with
-          open(input_example_path, \"rb\") as f:\n        input_example = dill.load(f)\n\n    with
-          open(signature_path, \"rb\") as f:\n        signature = dill.load(f)\n\n    #
-          with open(conda_env_path, \"rb\") as f:\n    #     conda_env = dill.load(f)\n\n    if
-          isinstance(input_example, torch.Tensor):\n        input_example = input_example.numpy()\n    elif
+          open(model_path, mode=\"rb\") as f:\n        model = Net()\n        model.load_state_dict(torch.load(f))\n        #
+          model = dill.load(f)\n        model.eval()\n\n    with open(input_example_path,
+          \"rb\") as f:\n        input_example = dill.load(f)\n\n    with open(signature_path,
+          \"rb\") as f:\n        signature = dill.load(f)\n\n    # with open(conda_env_path,
+          \"rb\") as f:\n    #     conda_env = dill.load(f)\n\n    if isinstance(input_example,
+          torch.Tensor):\n        input_example = input_example.numpy()\n    elif
           isinstance(input_example, list):\n        input_example = pd.DataFrame(input_example)\n\n    save_model(\n        pytorch_model=model,\n        path=model_name,\n        #
           conda_env=conda_env,\n        signature=signature,\n        input_example=input_example,\n    )\n\n    run
           = client.create_run(\"0\")\n    client.log_artifact(run.info.run_id, model_name)\n\nimport

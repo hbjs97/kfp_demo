@@ -44,18 +44,16 @@ def mnist_model_train(
             return x
 
     model = Net()
-
     model.eval()
 
     with open(model_path, "wb") as f:
+        # dill.dump(model, f)
         torch.save(model.state_dict(), f)
 
     input_example = torch.rand(1, 1, 2, 2)
 
-    # Get the model's output as a PyTorch tensor
     output_numpy = model(input_example)
 
-    # Use the numpy array for the signature
     signature = infer_signature(input_example.numpy(), output_numpy)
 
     with open(input_example_path, "wb") as f:
@@ -88,6 +86,8 @@ def upload_mlflow_artifacts(
     import pandas as pd
     import numpy as np
 
+    print("model path: ", model_path)
+
     os.environ["MLFLOW_S3_ENDPOINT_URL"] = "http://minio-service.kubeflow.svc:9000"
     os.environ["AWS_ACCESS_KEY_ID"] = "minio"
     os.environ["AWS_SECRET_ACCESS_KEY"] = "minio123"
@@ -119,6 +119,7 @@ def upload_mlflow_artifacts(
     with open(model_path, mode="rb") as f:
         model = Net()
         model.load_state_dict(torch.load(f))
+        # model = dill.load(f)
         model.eval()
 
     with open(input_example_path, "rb") as f:

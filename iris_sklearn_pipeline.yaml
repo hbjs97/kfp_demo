@@ -2,7 +2,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
   generateName: mlflow-pipeline-
-  annotations: {pipelines.kubeflow.org/kfp_sdk_version: 1.8.22, pipelines.kubeflow.org/pipeline_compilation_time: '2024-01-15T16:45:33.550561',
+  annotations: {pipelines.kubeflow.org/kfp_sdk_version: 1.8.22, pipelines.kubeflow.org/pipeline_compilation_time: '2024-01-17T14:27:34.780092',
     pipelines.kubeflow.org/pipeline_spec: '{"inputs": [{"name": "kernel", "type":
       "String"}, {"name": "model_name", "type": "String"}], "name": "mlflow_pipeline"}'}
   labels: {pipelines.kubeflow.org/kfp_sdk_version: 1.8.22}
